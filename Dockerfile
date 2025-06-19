@@ -1,22 +1,34 @@
-# Etapa de construcción
-FROM golang:1.22 AS builder
+# ┌───────────────────────────┐
+# │   1) BUILD STAGE         │
+# └───────────────────────────┘
+FROM golang:1.23-alpine AS builder
+
+# Necesitamos git + certificados TLS para poder hacer git pull en runtime
+RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
-# Usa el repositorio remoto o local (preferiblemente remoto si quieres actualización automática)
-RUN git clone https://github.com/usuario/mi-servidor.git .
-RUN go build -o servidor
+# Copiamos TODO tu proyecto (incluido .git)
+COPY . .
 
-# Etapa final
-FROM debian:bullseye-slim
+# Compilamos el binario desde cmd
+RUN go build -o server ./cmd
+
+
+# ┌───────────────────────────┐
+# │   2) RUNTIME STAGE       │
+# └───────────────────────────┘
+FROM golang:1.23-alpine
+
+RUN apk add --no-cache git ca-certificates
 
 WORKDIR /app
 
-# Copiar binario compilado y script de inicio
-COPY --from=builder /app/servidor /app/servidor
-COPY --from=builder /app /src
-COPY start.sh /start.sh
+# Traemos el código + el binario ya compilado
+COPY --from=builder /app /app
 
-RUN apt-get update && apt-get install -y git curl && chmod +x /start.sh
+# Script de arranque
+COPY start.sh /app/start.sh
+RUN chmod +x /app/start.sh
 
-CMD ["/start.sh"]
+ENTRYPOINT ["./start.sh"]
