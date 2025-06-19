@@ -1,10 +1,12 @@
 #!/bin/sh
+set -e
 
-echo "[INFO] Actualizando código desde GitHub..."
+echo "[INFO] Actualizando código..."
+cd /app
 git pull origin main
 
 echo "[INFO] Compilando nueva versión..."
 go build -o server ./cmd
 
-echo "[INFO] Ejecutando servidor..."
+echo "[INFO] Iniciando servidor..."
 exec ./server
