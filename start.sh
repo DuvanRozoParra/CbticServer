@@ -1,12 +1,14 @@
-#!/bin/sh
-set -e
+# ┌───────────────────────────┐
+# │   SINGLE STAGE           │
+# └───────────────────────────┘
+FROM golang:1.23-alpine
 
-echo "[INFO] Actualizando código..."
-cd /app
-git pull origin main
+RUN apk add --no-cache ca-certificates
 
-echo "[INFO] Compilando nueva versión..."
-go build -o server ./cmd
+WORKDIR /app
 
-echo "[INFO] Iniciando servidor..."
-exec ./server
+COPY . .
+
+EXPOSE 8080
+
+CMD ["go", "run", "main.go"]
