@@ -1,37 +1,38 @@
 package players
 
 import (
-	"encoding/json"
-
-	"github.com/DuvanRozoParra/servercbtic/internal/config"
 	typegame "github.com/DuvanRozoParra/servercbtic/internal/typesGame"
-	"github.com/DuvanRozoParra/servercbtic/pkg"
 )
 
-func EventMovement(jg *typegame.JobGame, playerID string, dataPlayer string) *typegame.MessageObject {
+func EventMovement(jg *typegame.JobGame, playerID string, dataPlayer string) *typegame.Player {
 	currentPlayer := ConvertToPlayer(dataPlayer)
-	jg.Players[playerID].Player = currentPlayer
+	if currentPlayer == nil {
+		return nil
+	}
+	p, exists := jg.Players[playerID]
+	if !exists || p == nil {
+		return nil
+	}
+	p.Player = currentPlayer
 
-	allPlayers := GetAllPlayer(jg, playerID)
-	jsonBytes, _ := json.Marshal(allPlayers)
-
-	return pkg.ConvertToMessageObject(string(jsonBytes), playerID, config.MovePlayer)
+	result := *currentPlayer
+	result.Id = playerID
+	result.Body.Position.Y -= 0.3
+	return &result
 }
 
-func EventAddPlayer(jg *typegame.JobGame, playerId string) *typegame.MessageObject {
-	allIds := GetAllPlayerId(jg, playerId)
-	jsonBytes, _ := json.Marshal(allIds)
-	return pkg.ConvertToMessageObject(string(jsonBytes), playerId, config.AddPlayer)
+func EventAddPlayer(jg *typegame.JobGame, playerId string) []typegame.AddPlayerMsg {
+	return GetAllPlayerId(jg, playerId)
 }
 
-func EventRayInteraction(jg *typegame.JobGame, playerId string, dataEvent string) *typegame.MessageObject {
-	return pkg.ConvertToMessageObject(dataEvent, playerId, config.RayInteraction)
+func EventRayInteraction(jg *typegame.JobGame, playerId string, dataEvent string) string {
+	return dataEvent
 }
 
-func EventActionsHandsAnimation(jg *typegame.JobGame, playerId string, dataAction string) *typegame.MessageObject {
-	return pkg.ConvertToMessageObject(dataAction, playerId, config.ActionHandsPlayer)
+func EventActionsHandsAnimation(jg *typegame.JobGame, playerId string, dataAction string) string {
+	return dataAction
 }
 
-func EventRemovePlayer(jg *typegame.JobGame, playerId string) *typegame.MessageObject {
-	return pkg.ConvertToMessageObject("", playerId, config.RemovePlayer)
+func EventRemovePlayer(jg *typegame.JobGame, playerId string) string {
+	return ""
 }

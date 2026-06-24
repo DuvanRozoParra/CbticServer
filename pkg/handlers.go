@@ -3,68 +3,28 @@ package pkg
 import (
 	"encoding/json"
 	"fmt"
-	"log"
-	"math/rand"
-	"slices"
 	"time"
 
 	"github.com/DuvanRozoParra/servercbtic/internal/config"
 	typegame "github.com/DuvanRozoParra/servercbtic/internal/typesGame"
 	"github.com/gofiber/contrib/websocket"
+	"github.com/rs/zerolog/log"
 )
-
-var (
-	// Lista completa de colores hexadecimales
-	colors = []string{
-		"#FF5733",
-		"#33FF57",
-		"#3357FF",
-		"#F1C40F",
-		"#9B59B6",
-		"#1ABC9C",
-		"#E74C3C",
-		"#8E44AD",
-		"#2ECC71",
-		"#3498DB",
-		// …añade todos los que necesites
-	}
-
-	// Copia de los colores que aún no se han usado
-	remaining []string
-	// muIdentify sync.Mutex
-)
-
-func init() {
-	// Semilla para que rand.Intn sea verdaderamente aleatorio
-	rand.Seed(time.Now().UnixNano())
-	// Inicializamos remaining con todos los colores
-	remaining = make([]string, len(colors))
-	copy(remaining, colors)
-}
-
-func IdentifyPlayer() (string, error) {
-	if len(remaining) == 0 {
-		return "", fmt.Errorf("no quedan colores únicos disponibles")
-	}
-
-	// Escogemos un índice aleatorio dentro de remaining
-	idx := rand.Intn(len(remaining))
-	color := remaining[idx]
-
-	// Lo eliminamos de remaining para que no se repita
-	remaining = slices.Delete(remaining, idx, idx+1)
-
-	return color, nil
-}
 
 func DesconnectUser(jg *typegame.JobGame, c *websocket.Conn, id string) typegame.MessageObject {
-	// cerrar conexion
-	c.Close()
-	// eliminar el usuario
 	jg.Mu.Lock()
+	if p, ok := jg.Players[id]; ok {
+		if p.Color != "" && jg.Colors != nil {
+			jg.Colors.Release(p.Color)
+		}
+		if p.Stop != nil {
+			close(p.Stop)
+		}
+		if p.Outbox != nil {
+			close(p.Outbox)
+		}
+	}
 	delete(jg.Players, id)
-	// delete(jg.Conn, id)
-	// delete(jg.Players, id)
 	jg.Mu.Unlock()
 
 	return typegame.MessageObject{
@@ -74,95 +34,176 @@ func DesconnectUser(jg *typegame.JobGame, c *websocket.Conn, id string) typegame
 	}
 }
 
-func AddUser(jg *typegame.JobGame, c *websocket.Conn, idPlayer string) *typegame.MessageObject {
+func KickPlayer(jg *typegame.JobGame, id string) bool {
 	jg.Mu.Lock()
 	defer jg.Mu.Unlock()
 
-	// Crea el nuevo objeto jugador
-	color, _ := IdentifyPlayer()
+	old, ok := jg.Players[id]
+	if !ok || old == nil {
+		return false
+	}
+	if old.Color != "" && jg.Colors != nil {
+		jg.Colors.Release(old.Color)
+	}
+	if old.Stop != nil {
+		close(old.Stop)
+	}
+	if old.Conn != nil {
+		_ = old.Conn.SetReadDeadline(time.Now())
+	}
+	delete(jg.Players, id)
+	return true
+}
+
+func AddUser(jg *typegame.JobGame, c *websocket.Conn, idPlayer string) (*typegame.MessageObject, *typegame.Players, error) {
+	jg.Mu.Lock()
+	defer jg.Mu.Unlock()
+
+	if _, exists := jg.Players[idPlayer]; exists {
+		return nil, nil, fmt.Errorf("id duplicado: %s", idPlayer)
+	}
+
+	if jg.Colors == nil {
+		return nil, nil, fmt.Errorf("pool de colores no inicializado")
+	}
+
+	color, err := jg.Colors.Acquire()
+	if err != nil {
+		return nil, nil, fmt.Errorf("sin colores disponibles: %w", err)
+	}
 	py := &typegame.Player{}
 	player := &typegame.Players{
 		Id:     idPlayer,
 		Color:  color,
 		Conn:   c,
 		Player: py,
+		Outbox: make(chan typegame.OutboundFrame, config.OutboxSize),
+		Stop:   make(chan struct{}),
 	}
 
-	data := ConvertToJson(&typegame.AddPlayerMsg{
-		Id:    idPlayer,
-		Color: color,
-	})
-
-	// Así es como agregas correctamente al mapa
 	jg.Players[idPlayer] = player
 
-	return ConvertToMessageObject(string(data), idPlayer, config.AddPlayer)
+	return &typegame.MessageObject{From: idPlayer, Event: config.AddPlayer}, player, nil
 }
 
-func ConvertToMessageObject(data string, from string, event config.EventServer) *typegame.MessageObject {
-	return &typegame.MessageObject{
-		Data:  data,
-		From:  from,
-		Event: event,
+func MarshalEventData(payload any) (string, error) {
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
 	}
+	return string(b), nil
+}
+
+func BuildWire(data, from string, event config.EventServer) ([]byte, error) {
+	return json.Marshal(typegame.MessageObject{Data: data, From: from, Event: event})
 }
 
 func ByteToMessageObject(msg []byte) (typegame.MessageObject, error) {
 	var message typegame.MessageObject
 	err := json.Unmarshal(msg, &message)
 	if err != nil {
-		log.Printf("Error al deserializar el mensaje: %v", err)
+		log.Warn().Err(err).Msg("Error al deserializar el mensaje")
 		return typegame.MessageObject{}, err
 	}
 	return message, nil
 }
 
-func ConvertToJson(data any) []byte {
-	dataJSON, err := json.Marshal(data)
-	if err != nil {
-		log.Printf("Error al convertir a JSON: %v", err)
-		return nil
+func SendAllMsg(jg *typegame.JobGame, opcode int, msg []byte) {
+	if msg == nil {
+		log.Warn().Msg("SendAllMsg: payload nulo, broadcast descartado")
+		return
 	}
-	return dataJSON
+
+	jg.Mu.RLock()
+	players := make([]*typegame.Players, 0, len(jg.Players))
+	for _, p := range jg.Players {
+		players = append(players, p)
+	}
+	jg.Mu.RUnlock()
+
+	frame := typegame.OutboundFrame{Opcode: opcode, Data: msg}
+	for _, p := range players {
+		safeSendOutbox(p, frame)
+	}
 }
 
-func SendAllMsg(jg *typegame.JobGame, msg []byte) {
-	// for _, c := range jg.Conn {
-	for _, c := range jg.Players {
-		if err := c.Conn.WriteMessage(websocket.BinaryMessage, msg); err != nil {
-			log.Printf("Error enviando: %v", err)
+func SendAllExcept(jg *typegame.JobGame, exceptID string, opcode int, msg []byte) {
+	if msg == nil {
+		return
+	}
+
+	jg.Mu.RLock()
+	players := make([]*typegame.Players, 0, len(jg.Players))
+	for _, p := range jg.Players {
+		if p.Id == exceptID {
+			continue
 		}
+		players = append(players, p)
+	}
+	jg.Mu.RUnlock()
+
+	frame := typegame.OutboundFrame{Opcode: opcode, Data: msg}
+	for _, p := range players {
+		safeSendOutbox(p, frame)
 	}
 }
 
-func SendMsg(jg *typegame.JobGame, idPlayer string, msg []byte) {
+func SendMsg(jg *typegame.JobGame, idPlayer string, opcode int, msg []byte) {
+	if msg == nil {
+		log.Warn().Str("player", idPlayer).Msg("SendMsg: payload nulo")
+		return
+	}
+
+	jg.Mu.RLock()
 	py, exists := jg.Players[idPlayer]
+	jg.Mu.RUnlock()
 
 	if !exists {
 		return
 	}
 
-	if msg == nil {
-		log.Printf("MSG no se puede enviar por que es null: %v", msg)
-		return
-	}
+	safeSendOutbox(py, typegame.OutboundFrame{Opcode: opcode, Data: msg})
+}
 
-	err := py.Conn.WriteMessage(websocket.TextMessage, msg)
-	if err != nil {
-		log.Printf("Error escribiendo en WebSocket: %v", err)
+func safeSendOutbox(p *typegame.Players, frame typegame.OutboundFrame) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Warn().Str("player", p.Id).Interface("panic", r).Msg("send on closed outbox")
+		}
+	}()
+	select {
+	case p.Outbox <- frame:
+	default:
+		log.Warn().Str("player", p.Id).Msg("outbox full, dropping msg")
 	}
 }
 
-func SendMsgAllWithout(jg *typegame.JobGame, idPlayer string, msg []byte) {
-	for index, c := range jg.Players {
-		// playerCurrent := jg.Players[index]
-		playerCurrent := jg.Players[index]
-
-		if playerCurrent.Id != idPlayer {
-			if err := c.Conn.WriteMessage(websocket.BinaryMessage, msg); err != nil {
-				log.Printf("Error enviando: %v", err)
+func StartWriter(p *typegame.Players) {
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Error().Str("player", p.Id).Interface("panic", r).Msg("writer panic, forzando cleanup")
+				_ = p.Conn.SetReadDeadline(time.Now())
+			}
+		}()
+		for {
+			select {
+			case frame, ok := <-p.Outbox:
+				if !ok {
+					return
+				}
+				if err := p.Conn.SetWriteDeadline(time.Now().Add(config.WriteTimeout)); err != nil {
+					log.Warn().Err(err).Str("player", p.Id).Msg("writer: SetWriteDeadline")
+					return
+				}
+				if err := p.Conn.WriteMessage(frame.Opcode, frame.Data); err != nil {
+					log.Warn().Err(err).Str("player", p.Id).Msg("writer: WriteMessage")
+					_ = p.Conn.SetReadDeadline(time.Now())
+					return
+				}
+			case <-p.Stop:
+				return
 			}
 		}
-
-	}
+	}()
 }

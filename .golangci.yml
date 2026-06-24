@@ -1,0 +1,48 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  disable-all: true
+  enable:
+    - govet
+    - errcheck
+    - ineffassign
+    - unused
+    - staticcheck
+    - gosimple
+    - gocritic
+    - gofmt
+    - goimports
+    - misspell
+    - bodyclose
+    - contextcheck
+    - nilerr
+    - nolintlint
+    - prealloc
+    - revive
+
+linters-settings:
+  gofmt:
+    simplify: true
+  gocritic:
+    enabled-tags:
+      - performance
+      - style
+      - diagnostic
+  prealloc:
+    simple: true
+    range-loops: true
+    for-loops: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - errcheck
+        - ineffassign
+        - gosimple
+    - path: internal/colors/
+      linters:
+        - gocritic
+      text: "exitAfterDefer"

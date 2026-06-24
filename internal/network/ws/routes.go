@@ -11,6 +11,17 @@ import (
 func RouterWebsocket(app *fiber.App, jg *typegame.JobGame) {
 	api := app.Group("/api")
 
+	api.Get("/health", func(c *fiber.Ctx) error {
+		jg.Mu.RLock()
+		players := len(jg.Players)
+		jg.Mu.RUnlock()
+		return c.JSON(fiber.Map{
+			"status":  "ok",
+			"players": players,
+			"queue":   len(jg.Queue),
+		})
+	})
+
 	v1 := api.Group("/v1")
 	v1.Use("/ws", middleware.ConnectWebsocket)
 	v1.Get("/ws/:id", websocket.New(func(c *websocket.Conn) {

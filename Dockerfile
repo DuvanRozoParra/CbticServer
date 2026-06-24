@@ -22,7 +22,7 @@ RUN go build -o server ./cmd/main.go
 # Etapa 2: imagen final mínima
 FROM alpine:latest
 
-RUN apk add --no-cache ca-certificates
+RUN apk add --no-cache ca-certificates wget
 
 WORKDIR /app
 
@@ -30,6 +30,9 @@ WORKDIR /app
 COPY --from=builder /app/server .
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --quiet --tries=1 --spider http://localhost:8080/api/health || exit 1
 
 # Ejecutar binario
 CMD ["./server"]

@@ -5,6 +5,7 @@ go 1.23.2
 require (
 	github.com/gofiber/contrib/websocket v1.3.4
 	github.com/gofiber/fiber/v2 v2.52.6
+	github.com/rs/zerolog v1.35.1
 )
 
 require (
